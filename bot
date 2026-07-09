@@ -1,0 +1,185 @@
+import asyncio
+import logging
+from typing import Dict, Any
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+BOT_TOKEN = "ТВОЙ_ТОКЕН_СЮДА"
+
+logging.basicConfig(level=logging.INFO)
+
+# Храним настройки дебилов (юзеров) в памяти
+user_settings: Dict[int, Dict[str, Any]] = {}
+seen_gifts: set = set()
+
+class FilterState(StatesGroup):
+    gift_name = State()
+    min_price = State()
+    max_price = State()
+
+def main_kb(user_id: int):
+    s = user_settings.get(user_id, {
+        "mode": "hybrid",
+        "currency": "STARS",
+        "min_price": 0,
+        "max_price": "INF",
+        "gift_name": "ВСЕ"
+    })
+    
+    modes = {
+        "on_sale": "НА ПРОДАЖЕ",
+        "not_sale": "ЗАНЯТЫ (В ПРОФИЛЕ)",
+        "hybrid": "ГИБРИД (ХУЯРИТЬ ВСЕ)"
+    }
+    
+    b = InlineKeyboardBuilder()
+    b.button(text=f"Гифт: {s['gift_name']}", callback_data="set_gift")
+    b.button(text=f"Режим: {modes[s['mode']]}", callback_data="toggle_mode")
+    b.button(text=f"Валюта: {s['currency']}", callback_data="toggle_curr")
+    b.button(text=f"Мин цена: {s['min_price']}", callback_data="set_min")
+    b.button(text=f"Макс цена: {s['max_price']}", callback_data="set_max")
+    b.adjust(1, 2, 2)
+    return b.as_markup()
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+@dp.message(Command("start"))
+async def start(msg: types.Message):
+    uid = msg.from_user.id
+    if uid not in user_settings:
+        user_settings[uid] = {
+            "mode": "hybrid",
+            "currency": "STARS",
+            "min_price": 0,
+            "max_price": float("inf"),
+            "gift_name": "ВСЕ"
+        }
+    await msg.answer("Настраивай фильтры и не еби мозги:", reply_markup=main_kb(uid))
+
+@dp.callback_query(F.data == "toggle_mode")
+async def toggle_mode(cb: types.CallbackQuery):
+    uid = cb.from_user.id
+    m = ["hybrid", "on_sale", "not_sale"]
+    user_settings[uid]["mode"] = m[(m.index(user_settings[uid]["mode"]) + 1) % len(m)]
+    await cb.message.edit_reply_markup(reply_markup=main_kb(uid))
+    await cb.answer()
+
+@dp.callback_query(F.data == "toggle_curr")
+async def toggle_curr(cb: types.CallbackQuery):
+    uid = cb.from_user.id
+    c = user_settings[uid]["currency"]
+    user_settings[uid]["currency"] = "TON" if c == "STARS" else "STARS"
+    await cb.message.edit_reply_markup(reply_markup=main_kb(uid))
+    await cb.answer()
+
+@dp.callback_query(F.data == "set_gift")
+async def set_gift(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(FilterState.gift_name)
+    await cb.message.answer("Пиши название гифта (или 'все' если похуй):")
+    await cb.answer()
+
+@dp.message(FilterState.gift_name)
+async def get_gift_name(msg: types.Message, state: FSMContext):
+    txt = msg.text.strip()
+    user_settings[msg.from_user.id]["gift_name"] = "ВСЕ" if txt.lower() in ["все", "all"] else txt
+    await state.clear()
+    await msg.answer("Записал.", reply_markup=main_kb(msg.from_user.id))
+
+@dp.callback_query(F.data == "set_min")
+async def set_min(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(FilterState.min_price)
+    await cb.message.answer("Мин цена (числом):")
+    await cb.answer()
+
+@dp.message(FilterState.min_price)
+async def get_min(msg: types.Message, state: FSMContext):
+    try:
+        val = float(msg.text.replace(",", "."))
+        user_settings[msg.from_user.id]["min_price"] = val
+        await state.clear()
+        await msg.answer("Принято.", reply_markup=main_kb(msg.from_user.id))
+    except:
+        await msg.answer("Число введи, долбоеб.")
+
+@dp.callback_query(F.data == "set_max")
+async def set_max(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(FilterState.max_price)
+    await cb.message.answer("Макс цена (0 если без лимита):")
+    await cb.answer()
+
+@dp.message(FilterState.max_price)
+async def get_max(msg: types.Message, state: FSMContext):
+    try:
+        val = float(msg.text.replace(",", "."))
+        user_settings[msg.from_user.id]["max_price"] = val if val > 0 else float("inf")
+        await state.clear()
+        await msg.answer("Принято.", reply_markup=main_kb(msg.from_user.id))
+    except:
+        await msg.answer("Число говорю введи.")
+
+def check_filters(item: dict, s: dict) -> bool:
+    # 1. Чек названия
+    if s["gift_name"] != "ВСЕ" and s["gift_name"].lower() not in item["name"].lower():
+        return False
+        
+    is_sale = item["is_on_sale"]
+    # 2. Чек режима
+    if s["mode"] == "on_sale" and not is_sale:
+        return False
+    if s["mode"] == "not_sale" and is_sale:
+        return False
+        
+    # 3. Чек цены если продается
+    if is_sale:
+        if item["currency"] != s["currency"]:
+            return False
+        p = item["price"]
+        if not (s["min_price"] <= p <= s["max_price"]):
+            return False
+            
+    return True
+
+async def parser_loop():
+    """
+    Тут хуяришь запрос через Pyrogram client.invoke(payments.GetResaleStarGifts(...)) 
+    или парсишь маркетплейс.
+    """
+    while True:
+        try:
+            # Имитация данных из парсера MTProto / Web
+            parsed_data = [
+                {"id": "g1", "name": "Pepe", "is_on_sale": True, "price": 1500, "currency": "STARS", "link": "t.me/nft/pepe-1"},
+                {"id": "g2", "name": "Pepper", "is_on_sale": False, "price": 0, "currency": "NONE", "link": "t.me/nft/pepper-9"}
+            ]
+
+            for item in parsed_data:
+                if item["id"] in seen_gifts:
+                    continue
+                seen_gifts.add(item["id"])
+
+                for uid, st in user_settings.items():
+                    if check_filters(item, st):
+                        status = f"На продаже за {item['price']} {item['currency']}" if item['is_on_sale'] else "Занят / В профиле"
+                        text = (
+                            f"СКАМНУЛСЯ ГИФТ:\n"
+                            f"Название: {item['name']}\n"
+                            f"Статус: {status}\n"
+                            f"Ссылка: {item['link']}"
+                        )
+                        await bot.send_message(uid, text)
+        except Exception as e:
+            logging.error(f"Пиздец в цикле: {e}")
+
+        await asyncio.sleep(5)
+
+async def main():
+    asyncio.create_task(parser_loop())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
