@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "ТВОЙ_ТОКЕН_СЮДА"
+BOT_TOKEN = "8935270608:AAEO4A58rSqvcW6QAKSYFAM22k9MTt0gruU"
 
 logging.basicConfig(level=logging.INFO)
 
